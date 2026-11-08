@@ -1,5 +1,5 @@
 'use strict';
-const STORAGE = 'noqte.news.v1';
+const STORAGE = 'bgnews.news.v2';
 const names = { Z: 'زومجی', V: 'ویجیاتو', G: 'گیمفا' };
 let state = { items: [], sources: {}, lastUpdate: null };
 let storageWarning = false;
