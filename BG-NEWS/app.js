@@ -111,6 +111,16 @@ document.querySelectorAll('.filter').forEach(button => button.addEventListener('
   render();
 }));
 $('refresh').addEventListener('click', refresh);
+const backToTop = $('back-to-top');
+function updateBackToTop() {
+  backToTop.classList.toggle('visible', window.scrollY > 320);
+}
+backToTop.addEventListener('click', () => {
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  window.scrollTo({ top: 0, behavior: reducedMotion ? 'auto' : 'smooth' });
+});
+window.addEventListener('scroll', updateBackToTop, { passive: true });
+updateBackToTop();
 render();
 if (storageWarning) message('ذخیرهٔ قبلی خوانده نشد؛ در این صفحه از فهرست تازه استفاده می‌شود.', true);
 if (location.protocol === 'file:') message('برای دریافت خبرها، python3 server.py را اجرا کن و آدرس http://127.0.0.1:8765 را در مرورگر باز کن.', true);

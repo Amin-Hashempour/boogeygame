@@ -35,3 +35,22 @@ body{color:#f3f2f6}
 .orbit-two{border-color:#57505d}
 .empty-symbol{background:linear-gradient(145deg,#4a3f53,#35343b);border-color:#715d82;color:#d0b5ed}
 .empty-caption,footer{color:#96939d}
+
+.site-header{position:fixed;inset:0 0 auto;z-index:20;height:72px;display:grid;place-items:center;background:#303137e8;border-bottom:1px solid #4a4b54;box-shadow:0 8px 24px #11121628;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+.site-header span{direction:ltr;font-size:28px;font-weight:700;letter-spacing:4px;color:#f3f2f6;text-shadow:0 0 24px #a78bfa38}
+body{padding-top:72px}
+.back-to-top{position:fixed;left:34px;bottom:28px;z-index:6;width:60px;height:60px;border:1px solid #70607f;border-radius:20px;background:#44394f;color:#d8c1fb;box-shadow:0 8px 35px #1112163d;display:grid;place-items:center;opacity:0;visibility:hidden;transform:translateY(12px);transition:opacity .2s,visibility .2s,transform .2s,background .2s}
+.back-to-top.visible{opacity:1;visibility:visible;transform:translateY(0)}
+.back-to-top:hover{background:#51445e;transform:translateY(-3px)}
+.back-to-top svg{width:27px;height:27px}
+
+@media(max-width:650px){
+  .site-header{height:60px}
+  .site-header span{font-size:21px;letter-spacing:3px}
+  body{padding-top:60px}
+  .back-to-top{left:20px;bottom:20px;width:55px;height:55px;border-radius:18px}
+}
+
+@media(prefers-reduced-motion:reduce){
+  .back-to-top{transition:none}
+}
