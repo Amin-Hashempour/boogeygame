@@ -4,12 +4,15 @@ import concurrent.futures
 import hashlib
 import json
 import argparse
+import socket
+import threading
 import xml.etree.ElementTree as ET
 from html import unescape
 from html.parser import HTMLParser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent
@@ -18,6 +21,29 @@ SOURCES = {
     'V': ('ویجیاتو', 'https://vigiato.net', ['/feed/']),
     'G': ('گیمفا', 'https://gamefa.com', ['/feed/']),
 }
+CACHE_DIR = ROOT / '.cache' / 'images'
+INDEX_PATH = ROOT / '.cache' / 'image-index.json'
+INDEX_LOCK = threading.Lock()
+TOKEN_LOCKS = {}
+
+def load_image_index():
+    try:
+        saved = json.loads(INDEX_PATH.read_text(encoding='utf-8'))
+        if isinstance(saved, dict):
+            return {token: value for token, value in saved.items()
+                    if len(token) == 64 and isinstance(value, dict)
+                    and value.get('kind') in ('image', 'article')
+                    and safe_url(value.get('url', ''), '')}
+    except (OSError, ValueError, TypeError):
+        pass
+    return {}
+
+def save_image_index():
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = INDEX_PATH.with_suffix('.tmp')
+    temporary.write_text(json.dumps(IMAGE_URLS, ensure_ascii=False), encoding='utf-8')
+    temporary.replace(INDEX_PATH)
+
 IMAGE_URLS = {}
 
 class Images(HTMLParser):
@@ -42,6 +68,8 @@ class Images(HTMLParser):
 def safe_url(value, base):
     value = urljoin(base, value or '')
     return value if urlsplit(value).scheme in ('http', 'https') else ''
+
+IMAGE_URLS.update(load_image_index())
 
 def request_bytes(url, *, accept, referer='', limit=8 * 1024 * 1024, timeout=18):
     headers = {
@@ -68,9 +96,9 @@ def image_content_type(data, reported):
             return content_type
     return ''
 
-def find_article_image(url):
+def find_article_image(url, timeout=6):
     try:
-        data, content_type = request_bytes(url, accept='text/html,application/xhtml+xml', limit=2 * 1024 * 1024, timeout=10)
+        data, content_type = request_bytes(url, accept='text/html,application/xhtml+xml', limit=2 * 1024 * 1024, timeout=timeout)
         if content_type not in ('text/html', 'application/xhtml+xml'):
             return ''
         parser = Images()
@@ -79,19 +107,85 @@ def find_article_image(url):
     except Exception:
         return ''
 
-def add_image_proxies(items):
-    missing = [item for item in items if not item['image']]
-    if missing:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(missing))) as pool:
-            found = pool.map(find_article_image, (item['url'] for item in missing))
-            for item, image in zip(missing, found):
-                item['image'] = image
+def register_image_sources(items):
+    changed = False
     for item in items:
         if item['image']:
-            token = hashlib.sha256(item['image'].encode()).hexdigest()
-            IMAGE_URLS[token] = (item['image'], item['url'])
-            item['image'] = '/api/image/' + token
+            identity = item['image']
+            record = {'kind': 'image', 'url': item['image'], 'referer': item['url']}
+        else:
+            identity = 'article:' + item['url']
+            record = {'kind': 'article', 'url': item['url'], 'referer': item['url']}
+        token = hashlib.sha256(identity.encode()).hexdigest()
+        if IMAGE_URLS.get(token) != record:
+            IMAGE_URLS[token] = record
+            changed = True
+        item['image'] = '/api/image/' + token
+    if changed:
+        with INDEX_LOCK:
+            save_image_index()
     return items
+
+def fetch_image(token):
+    record = IMAGE_URLS.get(token)
+    if not record:
+        raise FileNotFoundError('Unknown image token')
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    data_path = CACHE_DIR / (token + '.bin')
+    type_path = CACHE_DIR / (token + '.type')
+    if data_path.is_file() and type_path.is_file():
+        content_type = type_path.read_text(encoding='ascii').strip()
+        if content_type.startswith('image/'):
+            return data_path.read_bytes(), content_type
+
+    with INDEX_LOCK:
+        lock = TOKEN_LOCKS.setdefault(token, threading.Lock())
+    with lock:
+        if data_path.is_file() and type_path.is_file():
+            content_type = type_path.read_text(encoding='ascii').strip()
+            if content_type.startswith('image/'):
+                return data_path.read_bytes(), content_type
+
+        if record['kind'] == 'article':
+            article_url = record['url']
+            image_url = find_article_image(article_url)
+            if not image_url:
+                raise ValueError('Article has no usable image')
+            record = {'kind': 'image', 'url': image_url, 'referer': article_url}
+            IMAGE_URLS[token] = record
+            with INDEX_LOCK:
+                save_image_index()
+
+        try:
+            data, reported_type = request_bytes(
+                record['url'], accept='image/avif,image/webp,image/*,*/*;q=0.8',
+                referer=record.get('referer', ''), limit=10 * 1024 * 1024, timeout=8)
+        except Exception:
+            data, reported_type = request_bytes(
+                record['url'], accept='image/avif,image/webp,image/*,*/*;q=0.8',
+                limit=10 * 1024 * 1024, timeout=6)
+        content_type = image_content_type(data, reported_type)
+        if not content_type:
+            raise ValueError('Remote response is not an image')
+        temporary = data_path.with_suffix('.tmp')
+        temporary.write_bytes(data)
+        temporary.replace(data_path)
+        type_path.write_text(content_type, encoding='ascii')
+        return data, content_type
+
+def describe_error(error):
+    if isinstance(error, HTTPError):
+        return f'HTTP {error.code}'
+    if isinstance(error, (TimeoutError, socket.timeout)):
+        return 'timeout'
+    if isinstance(error, URLError):
+        reason = error.reason
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            return 'timeout'
+        return f'network: {str(reason)[:80]}'
+    if isinstance(error, ET.ParseError):
+        return 'invalid RSS/XML'
+    return type(error).__name__
 
 def parse_feed(data, base):
     root = ET.fromstring(data)
@@ -140,13 +234,20 @@ def parse_feed(data, base):
 
 def fetch_source(code):
     name, base, paths = SOURCES[code]
+    failures = []
     for path in paths:
         try:
-            data, _ = request_bytes(base + path, accept='application/rss+xml, application/atom+xml, application/xml, text/xml')
-            return code, {'items': add_image_proxies(parse_feed(data, base)), 'error': None}
-        except Exception:
-            continue
-    return code, {'items': [], 'error': f'دریافت مطالب {name} ممکن نشد؛ اتصال اینترنت یا دسترسی سایت به RSS را بررسی کنید.'}
+            data, _ = request_bytes(
+                base + path,
+                accept='application/rss+xml, application/atom+xml, application/xml, text/xml',
+                timeout=7)
+            return code, {'items': register_image_sources(parse_feed(data, base)), 'error': None}
+        except Exception as error:
+            failure = f'{path}: {describe_error(error)}'
+            failures.append(failure)
+            print(f'[{code}] {failure}', flush=True)
+    detail = '؛ '.join(failures)
+    return code, {'items': [], 'error': f'دریافت مطالب {name} ممکن نشد ({detail}).'}
 
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs): super().__init__(*args, directory=str(ROOT), **kwargs)
@@ -161,21 +262,16 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers(); self.wfile.write(body)
         elif path.startswith('/api/image/'):
             token = path.rsplit('/', 1)[-1]
-            image = IMAGE_URLS.get(token)
-            if not image:
+            if len(token) != 64 or any(character not in '0123456789abcdef' for character in token):
                 self.send_error(404); return
             try:
-                try:
-                    data, reported_type = request_bytes(image[0], accept='image/avif,image/webp,image/*,*/*;q=0.8', referer=image[1], limit=10 * 1024 * 1024, timeout=15)
-                except Exception:
-                    data, reported_type = request_bytes(image[0], accept='image/avif,image/webp,image/*,*/*;q=0.8', limit=10 * 1024 * 1024, timeout=15)
-                content_type = image_content_type(data, reported_type)
-                if not content_type:
-                    raise ValueError('Not an image')
+                data, content_type = fetch_image(token)
+            except FileNotFoundError:
+                self.send_error(404); return
             except Exception:
                 self.send_error(502); return
             self.send_response(200); self.send_header('Content-Type', content_type)
-            self.send_header('Cache-Control', 'private, max-age=3600'); self.send_header('Content-Length', str(len(data)))
+            self.send_header('Cache-Control', 'private, max-age=604800'); self.send_header('Content-Length', str(len(data)))
             self.end_headers(); self.wfile.write(data)
         elif path in ('/', '/index.html', '/favicon.svg', '/fonts.css', '/styles.css', '/app.js') or path.startswith('/fonts/'):
             super().do_GET()

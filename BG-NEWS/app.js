@@ -84,7 +84,7 @@ function mergeSource(current, code, incoming) {
 }
 async function refresh() {
   const button = $('refresh'); button.disabled = true; button.setAttribute('aria-busy', 'true'); $('refresh-label').textContent = 'در حال بررسی…'; $('messages').replaceChildren();
-  const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 45000);
+  const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 20000);
   try {
     const response = await fetch('/api/news', { cache: 'no-store', signal: controller.signal });
     if (!response.ok) throw new Error('server');

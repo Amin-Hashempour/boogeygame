@@ -1,5 +1,7 @@
 import unittest
 from unittest.mock import patch
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import server
 
 RSS = b'''<rss xmlns:media="http://search.yahoo.com/mrss/"><channel>
@@ -32,6 +34,26 @@ class FeedTests(unittest.TestCase):
         with patch('server.urlopen', side_effect=OSError('offline')):
             code, result = server.fetch_source('V')
         self.assertEqual(code, 'V'); self.assertEqual(result['items'], []); self.assertTrue(result['error'])
+        self.assertIn('OSError', result['error'])
+    def test_feed_refresh_does_not_open_article_pages(self):
+        with patch('server.request_bytes', return_value=(RSS, 'application/rss+xml')), \
+             patch('server.find_article_image', side_effect=AssertionError('must stay lazy')), \
+             patch('server.save_image_index'):
+            code, result = server.fetch_source('V')
+        self.assertEqual(code, 'V')
+        self.assertIsNone(result['error'])
+        self.assertTrue(all(item['image'].startswith('/api/image/') for item in result['items']))
+    def test_cached_image_is_reused_without_network(self):
+        token = 'a' * 64
+        with TemporaryDirectory() as directory, \
+             patch.object(server, 'CACHE_DIR', Path(directory)), \
+             patch('server.request_bytes', side_effect=AssertionError('network must not run')):
+            Path(directory, token + '.bin').write_bytes(b'cached-image')
+            Path(directory, token + '.type').write_text('image/jpeg', encoding='ascii')
+            server.IMAGE_URLS[token] = {'kind': 'image', 'url': 'https://example.org/image.jpg', 'referer': 'https://example.org/post'}
+            data, content_type = server.fetch_image(token)
+        self.assertEqual(data, b'cached-image')
+        self.assertEqual(content_type, 'image/jpeg')
     def test_unsafe_url(self):
         self.assertEqual(server.safe_url('javascript:alert(1)', 'https://example.org'), '')
     def test_image_type_sniffing_for_generic_cdn_response(self):
