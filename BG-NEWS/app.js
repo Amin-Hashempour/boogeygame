@@ -84,7 +84,7 @@ function mergeSource(current, code, incoming) {
 }
 async function refresh() {
   const button = $('refresh'); button.disabled = true; button.setAttribute('aria-busy', 'true'); $('refresh-label').textContent = 'در حال بررسی…'; $('messages').replaceChildren();
-  const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 20000);
+  const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 25000);
   try {
     const response = await fetch('/api/news', { cache: 'no-store', signal: controller.signal });
     if (!response.ok) throw new Error('server');
@@ -94,6 +94,7 @@ async function refresh() {
       if (!source || source.error || !Array.isArray(source.items) || !source.items.length) { message(source?.error || `پاسخی از ${names[code]} دریافت نشد.`, true); continue; }
       const items = source.items.filter(item => item && typeof item.id === 'string' && typeof item.title === 'string' && httpURL(item.url));
       if (!items.length) { message(`فهرست ${names[code]} قابل خواندن نیست.`, true); continue; }
+      if (source.warning) message(source.warning);
       added += mergeSource(state, code, items); success++;
     }
     if (success) {

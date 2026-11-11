@@ -4,6 +4,7 @@ import concurrent.futures
 import hashlib
 import json
 import argparse
+import re
 import socket
 import threading
 import xml.etree.ElementTree as ET
@@ -23,7 +24,9 @@ SOURCES = {
 }
 CACHE_DIR = ROOT / '.cache' / 'images'
 INDEX_PATH = ROOT / '.cache' / 'image-index.json'
+SOURCE_CACHE_PATH = ROOT / '.cache' / 'source-cache.json'
 INDEX_LOCK = threading.Lock()
+SOURCE_CACHE_LOCK = threading.Lock()
 TOKEN_LOCKS = {}
 
 def load_image_index():
@@ -187,6 +190,50 @@ def describe_error(error):
         return 'invalid RSS/XML'
     return type(error).__name__
 
+def parse_wordpress_posts(data):
+    posts = json.loads(data)
+    if not isinstance(posts, list):
+        raise ValueError('Invalid WordPress response')
+    items = []
+    for post in posts:
+        link = safe_url(post.get('link', ''), 'https://vigiato.net')
+        rendered = post.get('title', {}).get('rendered', '')
+        title = unescape(re.sub(r'<[^>]+>', '', rendered)).strip()
+        image = safe_url(post.get('jetpack_featured_media_url', ''), link)
+        embedded = post.get('_embedded', {}).get('wp:featuredmedia', [])
+        if not image and embedded:
+            image = safe_url(embedded[0].get('source_url', ''), link)
+        og_images = post.get('yoast_head_json', {}).get('og_image', [])
+        if not image and og_images:
+            image = safe_url(og_images[0].get('url', ''), link)
+        if link and title:
+            items.append({'id': link, 'url': link, 'title': title,
+                          'image': image, 'published': post.get('date_gmt') or post.get('date', '')})
+    if not items:
+        raise ValueError('WordPress API returned no posts')
+    return items
+
+def save_source_cache(code, items):
+    with SOURCE_CACHE_LOCK:
+        try:
+            saved = json.loads(SOURCE_CACHE_PATH.read_text(encoding='utf-8'))
+        except (OSError, ValueError, TypeError):
+            saved = {}
+        saved[code] = {'items': items}
+        SOURCE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary = SOURCE_CACHE_PATH.with_suffix('.tmp')
+        temporary.write_text(json.dumps(saved, ensure_ascii=False), encoding='utf-8')
+        temporary.replace(SOURCE_CACHE_PATH)
+
+def load_source_cache(code):
+    with SOURCE_CACHE_LOCK:
+        try:
+            saved = json.loads(SOURCE_CACHE_PATH.read_text(encoding='utf-8'))
+            items = saved.get(code, {}).get('items', [])
+            return items if isinstance(items, list) else []
+        except (OSError, ValueError, TypeError):
+            return []
+
 def parse_feed(data, base):
     root = ET.fromstring(data)
     def local(tag): return tag.rsplit('}', 1)[-1]
@@ -240,12 +287,31 @@ def fetch_source(code):
             data, _ = request_bytes(
                 base + path,
                 accept='application/rss+xml, application/atom+xml, application/xml, text/xml',
-                timeout=7)
-            return code, {'items': register_image_sources(parse_feed(data, base)), 'error': None}
+                timeout=12 if code == 'V' else 7)
+            items = parse_feed(data, base)
+            save_source_cache(code, items)
+            return code, {'items': register_image_sources(items), 'error': None, 'warning': None}
         except Exception as error:
             failure = f'{path}: {describe_error(error)}'
             failures.append(failure)
             print(f'[{code}] {failure}', flush=True)
+    if code == 'V':
+        try:
+            data, _ = request_bytes(
+                'https://vigiato.net/wp-json/wp/v2/posts?per_page=20&_embed=1',
+                accept='application/json', timeout=7)
+            items = parse_wordpress_posts(data)
+            save_source_cache(code, items)
+            return code, {'items': register_image_sources(items), 'error': None,
+                          'warning': 'RSS ویجیاتو پاسخ نداد؛ مطالب از API جایگزین دریافت شدند.'}
+        except Exception as error:
+            failure = f'WordPress API: {describe_error(error)}'
+            failures.append(failure)
+            print(f'[{code}] {failure}', flush=True)
+    cached = load_source_cache(code)
+    if cached:
+        return code, {'items': register_image_sources(cached), 'error': None,
+                      'warning': f'{name} پاسخ نداد؛ آخرین مطالب ذخیره‌شده نمایش داده شدند.'}
     detail = '؛ '.join(failures)
     return code, {'items': [], 'error': f'دریافت مطالب {name} ممکن نشد ({detail}).'}
 

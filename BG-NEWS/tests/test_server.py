@@ -31,18 +31,42 @@ class FeedTests(unittest.TestCase):
     def test_invalid_feed_is_failure(self):
         with self.assertRaises(ValueError): server.parse_feed(b'<html/>', 'https://example.org')
     def test_source_failure_is_isolated(self):
-        with patch('server.urlopen', side_effect=OSError('offline')):
+        with patch('server.urlopen', side_effect=OSError('offline')), \
+             patch('server.load_source_cache', return_value=[]):
             code, result = server.fetch_source('V')
         self.assertEqual(code, 'V'); self.assertEqual(result['items'], []); self.assertTrue(result['error'])
         self.assertIn('OSError', result['error'])
     def test_feed_refresh_does_not_open_article_pages(self):
         with patch('server.request_bytes', return_value=(RSS, 'application/rss+xml')), \
              patch('server.find_article_image', side_effect=AssertionError('must stay lazy')), \
-             patch('server.save_image_index'):
+             patch('server.save_image_index'), patch('server.save_source_cache'):
             code, result = server.fetch_source('V')
         self.assertEqual(code, 'V')
         self.assertIsNone(result['error'])
         self.assertTrue(all(item['image'].startswith('/api/image/') for item in result['items']))
+    def test_vigiato_uses_wordpress_api_after_feed_timeout(self):
+        api = b'''[{"link":"https://vigiato.net/p/1","date_gmt":"2026-11-11T08:00:00","title":{"rendered":"New &amp; Story"},"_embedded":{"wp:featuredmedia":[{"source_url":"https://vigiato.net/image.jpg"}]}}]'''
+        def response(url, **kwargs):
+            if '/feed/' in url:
+                raise TimeoutError()
+            return api, 'application/json'
+        with patch('server.request_bytes', side_effect=response), \
+             patch('server.save_source_cache'), patch('server.save_image_index'):
+            code, result = server.fetch_source('V')
+        self.assertEqual(code, 'V')
+        self.assertIsNone(result['error'])
+        self.assertIn('API', result['warning'])
+        self.assertEqual(result['items'][0]['title'], 'New & Story')
+    def test_cached_source_is_used_after_network_failure(self):
+        cached = [{'id': 'https://vigiato.net/p/old', 'url': 'https://vigiato.net/p/old',
+                   'title': 'Cached', 'image': '', 'published': '2026-11-10T08:00:00'}]
+        with patch('server.request_bytes', side_effect=TimeoutError()), \
+             patch('server.load_source_cache', return_value=cached), \
+             patch('server.save_image_index'):
+            code, result = server.fetch_source('V')
+        self.assertEqual(code, 'V')
+        self.assertIsNone(result['error'])
+        self.assertIn('ذخیره', result['warning'])
     def test_cached_image_is_reused_without_network(self):
         token = 'a' * 64
         with TemporaryDirectory() as directory, \
