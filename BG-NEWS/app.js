@@ -53,7 +53,9 @@ function render() {
     $('empty').querySelector('h2').textContent = 'یک رفرش تا تازه‌ترین‌ها';
     $('empty').querySelector('p').textContent = 'دکمهٔ بنفش را بزن؛ آخرین مطلب هر سه رسانه اینجا می‌آید. دفعه‌های بعد، مطالب جدید به این فهرست اضافه می‌شوند.';
   }
-  if (state.lastUpdate) $('update-time').textContent = 'آخرین بررسی موفق: ' + new Date(state.lastUpdate).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+  $('update-time').textContent = state.lastUpdate
+    ? 'آخرین بررسی موفق: ' + new Date(state.lastUpdate).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })
+    : 'هنوز به‌روزرسانی نشده';
 }
 // The first successful response establishes a separate baseline for each source.
 // Retain all baseline IDs, but display only its newest item. Later refreshes add
@@ -83,7 +85,7 @@ function mergeSource(current, code, incoming) {
   return fresh.length;
 }
 async function refresh() {
-  const button = $('refresh'); button.disabled = true; button.setAttribute('aria-busy', 'true'); $('refresh-label').textContent = 'در حال بررسی…'; $('messages').replaceChildren();
+  const button = $('refresh'); const clearButton = $('clear-news'); button.disabled = true; clearButton.disabled = true; button.setAttribute('aria-busy', 'true'); $('refresh-label').textContent = 'در حال بررسی…'; $('messages').replaceChildren();
   const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 25000);
   try {
     const response = await fetch('/api/news', { cache: 'no-store', signal: controller.signal });
@@ -104,7 +106,7 @@ async function refresh() {
     }
   } catch (error) {
     message(error.name === 'AbortError' ? 'دریافت بیش از حد طول کشید؛ دوباره امتحان کن.' : 'ارتباط با سرور محلی برقرار نشد. برنامه را با python3 server.py اجرا کن و صفحه را از آدرس سرور باز کن.', true);
-  } finally { clearTimeout(timeout); button.disabled = false; button.removeAttribute('aria-busy'); $('refresh-label').textContent = 'تازه‌ها رو بگیر'; }
+  } finally { clearTimeout(timeout); button.disabled = false; clearButton.disabled = false; button.removeAttribute('aria-busy'); $('refresh-label').textContent = 'تازه‌ها رو بگیر'; }
 }
 document.querySelectorAll('.filter').forEach(button => button.addEventListener('click', () => {
   filter = button.dataset.filter;
@@ -112,6 +114,20 @@ document.querySelectorAll('.filter').forEach(button => button.addEventListener('
   render();
 }));
 $('refresh').addEventListener('click', refresh);
+$('clear-news').addEventListener('click', () => {
+  state = { items: [], sources: {}, lastUpdate: null };
+  try { localStorage.removeItem(STORAGE); }
+  catch { storageWarning = true; }
+  filter = 'all';
+  document.querySelectorAll('.filter').forEach(button => {
+    const active = button.dataset.filter === 'all';
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+  $('messages').replaceChildren();
+  render();
+  message('همهٔ مطالب نمایش‌داده‌شده پاک شدند.');
+});
 const backToTop = $('back-to-top');
 function updateBackToTop() {
   backToTop.classList.toggle('visible', window.scrollY > 320);
