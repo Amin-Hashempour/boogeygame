@@ -248,9 +248,20 @@ def fetch_vigiato_fallbacks():
             accept='application/json', timeout=8)
         return parse_rss2json(data), 'RSS mirror'
 
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+    def google_news():
+        query = quote('site:vigiato.net', safe='')
+        data, _ = request_bytes(
+            f'https://news.google.com/rss/search?q={query}&hl=fa&gl=IR&ceid=IR:fa',
+            accept='application/rss+xml, application/xml, text/xml', timeout=8)
+        items = parse_feed(data, 'https://news.google.com')
+        for item in items:
+            item['title'] = re.sub(r'\s+-\s+(ویجیاتو|Vigiato)\s*$', '', item['title'], flags=re.I)
+        return items, 'Google News'
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
     futures = {executor.submit(wordpress): 'WordPress API',
-               executor.submit(rss_mirror): 'RSS mirror'}
+               executor.submit(rss_mirror): 'RSS mirror',
+               executor.submit(google_news): 'Google News'}
     failures = []
     try:
         for future in concurrent.futures.as_completed(futures):
@@ -357,8 +368,9 @@ def fetch_source(code):
                           'warning': f'RSS ویجیاتو پاسخ نداد؛ مطالب از {fallback_name} دریافت شدند.'}
     cached = load_source_cache(code)
     if cached:
+        detail = '؛ '.join(failures)
         return code, {'items': register_image_sources(cached), 'error': None,
-                      'warning': f'{name} پاسخ نداد؛ آخرین مطالب ذخیره‌شده نمایش داده شدند.'}
+                      'warning': f'{name} پاسخ نداد؛ آخرین مطالب ذخیره‌شده نمایش داده شدند. ({detail})'}
     detail = '؛ '.join(failures)
     return code, {'items': [], 'error': f'دریافت مطالب {name} ممکن نشد ({detail}).'}
 

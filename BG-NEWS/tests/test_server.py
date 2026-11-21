@@ -70,6 +70,19 @@ class FeedTests(unittest.TestCase):
         self.assertIsNone(result['error'])
         self.assertIn('RSS mirror', result['warning'])
         self.assertEqual(result['items'][0]['title'], 'Mirror & Story')
+    def test_vigiato_uses_google_news_when_other_paths_timeout(self):
+        google = b'''<rss><channel><item><title>Google Story - \xd9\x88\xdb\x8c\xd8\xac\xdb\x8c\xd8\xa7\xd8\xaa\xd9\x88</title><link>https://news.google.com/rss/articles/1</link><pubDate>Fri, 21 Nov 2026 08:00:00 GMT</pubDate></item></channel></rss>'''
+        def response(url, **kwargs):
+            if 'news.google.com' in url:
+                return google, 'application/rss+xml'
+            raise TimeoutError()
+        with patch('server.request_bytes', side_effect=response), \
+             patch('server.save_source_cache'), patch('server.save_image_index'):
+            code, result = server.fetch_source('V')
+        self.assertEqual(code, 'V')
+        self.assertIsNone(result['error'])
+        self.assertIn('Google News', result['warning'])
+        self.assertEqual(result['items'][0]['title'], 'Google Story')
     def test_cached_source_is_used_after_network_failure(self):
         cached = [{'id': 'https://vigiato.net/p/old', 'url': 'https://vigiato.net/p/old',
                    'title': 'Cached', 'image': '', 'published': '2026-11-10T08:00:00'}]
@@ -80,6 +93,7 @@ class FeedTests(unittest.TestCase):
         self.assertEqual(code, 'V')
         self.assertIsNone(result['error'])
         self.assertIn('ذخیره', result['warning'])
+        self.assertIn('timeout', result['warning'])
     def test_cached_image_is_reused_without_network(self):
         token = 'a' * 64
         with TemporaryDirectory() as directory, \
