@@ -57,6 +57,19 @@ class FeedTests(unittest.TestCase):
         self.assertIsNone(result['error'])
         self.assertIn('API', result['warning'])
         self.assertEqual(result['items'][0]['title'], 'New & Story')
+    def test_vigiato_uses_rss_mirror_when_direct_paths_timeout(self):
+        mirror = b'''{"status":"ok","items":[{"title":"Mirror &amp; Story","link":"https://vigiato.net/p/2","pubDate":"2026-11-21 08:00:00","thumbnail":"https://vigiato.net/mirror.jpg"}]}'''
+        def response(url, **kwargs):
+            if 'rss2json.com' in url:
+                return mirror, 'application/json'
+            raise TimeoutError()
+        with patch('server.request_bytes', side_effect=response), \
+             patch('server.save_source_cache'), patch('server.save_image_index'):
+            code, result = server.fetch_source('V')
+        self.assertEqual(code, 'V')
+        self.assertIsNone(result['error'])
+        self.assertIn('RSS mirror', result['warning'])
+        self.assertEqual(result['items'][0]['title'], 'Mirror & Story')
     def test_cached_source_is_used_after_network_failure(self):
         cached = [{'id': 'https://vigiato.net/p/old', 'url': 'https://vigiato.net/p/old',
                    'title': 'Cached', 'image': '', 'published': '2026-11-10T08:00:00'}]

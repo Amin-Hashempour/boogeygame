@@ -12,7 +12,7 @@ from html import unescape
 from html.parser import HTMLParser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -213,6 +213,59 @@ def parse_wordpress_posts(data):
         raise ValueError('WordPress API returned no posts')
     return items
 
+def parse_rss2json(data):
+    payload = json.loads(data)
+    if payload.get('status') != 'ok' or not isinstance(payload.get('items'), list):
+        raise ValueError(payload.get('message') or 'Invalid RSS mirror response')
+    items = []
+    for entry in payload['items']:
+        link = safe_url(entry.get('link', ''), 'https://vigiato.net')
+        title = unescape(re.sub(r'<[^>]+>', '', entry.get('title', ''))).strip()
+        enclosure = entry.get('enclosure') or {}
+        image = safe_url(entry.get('thumbnail') or enclosure.get('link', ''), link)
+        if not image:
+            parser = Images()
+            parser.feed(entry.get('content') or entry.get('description') or '')
+            image = safe_url(parser.image, link)
+        if link and title:
+            items.append({'id': link, 'url': link, 'title': title,
+                          'image': image, 'published': entry.get('pubDate', '')})
+    if not items:
+        raise ValueError('RSS mirror returned no posts')
+    return items
+
+def fetch_vigiato_fallbacks():
+    def wordpress():
+        data, _ = request_bytes(
+            'https://vigiato.net/wp-json/wp/v2/posts?per_page=20&_embed=1',
+            accept='application/json', timeout=8)
+        return parse_wordpress_posts(data), 'WordPress API'
+
+    def rss_mirror():
+        feed = quote('https://vigiato.net/feed/', safe='')
+        data, _ = request_bytes(
+            'https://api.rss2json.com/v1/api.json?rss_url=' + feed,
+            accept='application/json', timeout=8)
+        return parse_rss2json(data), 'RSS mirror'
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+    futures = {executor.submit(wordpress): 'WordPress API',
+               executor.submit(rss_mirror): 'RSS mirror'}
+    failures = []
+    try:
+        for future in concurrent.futures.as_completed(futures):
+            label = futures[future]
+            try:
+                items, source = future.result()
+                return items, source, failures
+            except Exception as error:
+                failure = f'{label}: {describe_error(error)}'
+                failures.append(failure)
+                print(f'[V] {failure}', flush=True)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    return [], '', failures
+
 def save_source_cache(code, items):
     with SOURCE_CACHE_LOCK:
         try:
@@ -287,7 +340,7 @@ def fetch_source(code):
             data, _ = request_bytes(
                 base + path,
                 accept='application/rss+xml, application/atom+xml, application/xml, text/xml',
-                timeout=12 if code == 'V' else 7)
+                timeout=8 if code == 'V' else 7)
             items = parse_feed(data, base)
             save_source_cache(code, items)
             return code, {'items': register_image_sources(items), 'error': None, 'warning': None}
@@ -296,18 +349,12 @@ def fetch_source(code):
             failures.append(failure)
             print(f'[{code}] {failure}', flush=True)
     if code == 'V':
-        try:
-            data, _ = request_bytes(
-                'https://vigiato.net/wp-json/wp/v2/posts?per_page=20&_embed=1',
-                accept='application/json', timeout=7)
-            items = parse_wordpress_posts(data)
+        items, fallback_name, fallback_failures = fetch_vigiato_fallbacks()
+        failures.extend(fallback_failures)
+        if items:
             save_source_cache(code, items)
             return code, {'items': register_image_sources(items), 'error': None,
-                          'warning': 'RSS ویجیاتو پاسخ نداد؛ مطالب از API جایگزین دریافت شدند.'}
-        except Exception as error:
-            failure = f'WordPress API: {describe_error(error)}'
-            failures.append(failure)
-            print(f'[{code}] {failure}', flush=True)
+                          'warning': f'RSS ویجیاتو پاسخ نداد؛ مطالب از {fallback_name} دریافت شدند.'}
     cached = load_source_cache(code)
     if cached:
         return code, {'items': register_image_sources(cached), 'error': None,
